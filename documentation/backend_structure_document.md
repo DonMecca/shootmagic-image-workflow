@@ -1,179 +1,163 @@
 # Backend Structure Document
 
-This document outlines the backend architecture, hosting, and infrastructure for the **codeguide-starter** project. It uses plain language so anyone can understand how the backend is set up and how it supports the application.
+This document explains the backend setup for the **shootmagic-image-workflow** project. It covers how the server is organized, how data is stored, how the API works, and how everything is hosted and secured. You don’t need a deep technical background to follow along.
 
 ## 1. Backend Architecture
 
-- **Framework and Design Pattern**
-  - We use **Next.js API Routes** to handle all server-side logic. These routes live alongside the frontend code in the same repository, making development and deployment simpler.
-  - The backend follows a **layered pattern**:
-    1. **API Layer**: Receives requests (login, registration, data fetch).  
-    2. **Service Layer**: Contains the core business logic (user validation, password hashing).  
-    3. **Data Access Layer**: Talks to the database via a simple ORM (e.g., Prisma or TypeORM).
+- **Monolithic Server with Serverless Functions**
+  - We use Next.js’s built-in serverless functions (API Routes) to handle all backend logic. Each function lives under `pages/api` (or `app/api` in the App Router) and scales automatically.
 
-- **Scalability**
-  - Stateless API routes can scale horizontally—new instances can spin up on demand.  
-  - We can add caching or a message queue (e.g., Redis or RabbitMQ) without changing the core code.
+- **Layered Design**
+  - Route Handlers (API Routes) receive incoming HTTP requests.
+  - Service Layer contains business logic (for example, image processing workflows or user management).
+  - Data Access Layer (via Drizzle ORM) reads and writes data to the database.
 
-- **Maintainability**
-  - Code for each feature is grouped by route (authentication, dashboard).  
-  - A service layer separates complex logic from request handling.
-
-- **Performance**
-  - Lightweight Node.js handlers keep response times low.  
-  - Future use of database connection pooling and Redis for caching repeated queries.
+- **Scalability, Maintainability, Performance**
+  - Serverless functions auto-scale based on traffic—no need to manage servers.
+  - A clear separation of concerns (routes → services → data) makes it easy to add features or fix bugs.
+  - Cold starts are minimal because Next.js keeps recently used functions warm.
 
 ## 2. Database Management
 
-- **Database Choice**
-  - We recommend **PostgreSQL** for structured data and reliable transactions.  
-  - In-memory caching can be added later with **Redis** for session tokens or frequently read data.
+- **Database Technology**
+  - PostgreSQL (a relational SQL database).
+  - Drizzle ORM (a TypeScript-friendly library) to write database queries in code rather than raw SQL.
 
-- **Data Storage and Access**
-  - Use an ORM like **Prisma** or **TypeORM** to map JavaScript/TypeScript objects to database tables.
-  - Connection pooling ensures efficient use of database connections under load.
-  - Migrations track schema changes over time, keeping development, staging, and production in sync.
+- **Data Structure & Access**
+  - Data is organized into tables (e.g., users, sessions, image_records, presets).
+  - We use migrations to evolve the schema over time.
+  - Backups are scheduled regularly (daily snapshots).
 
-- **Data Practices**
-  - Passwords are never stored in plain text—they are salted and hashed with **bcrypt** before saving.
-  - All outgoing data is typed and validated to prevent malformed records.
+- **Best Practices**
+  - All database credentials are stored in environment variables—never in code.
+  - Connection pooling is handled by the hosting provider (e.g., AWS RDS or Neon) to optimize performance.
 
 ## 3. Database Schema
 
-### Human-Readable Format
+Below is an example of the core SQL schema. It’s written in plain SQL so it’s easy to read and modify.
 
-- **Users**
-  - **id**: Unique identifier  
-  - **email**: User’s email address (unique)  
-  - **password_hash**: Securely hashed password  
-  - **created_at**: Account creation timestamp
-
-- **Sessions**
-  - **id**: Unique session record  
-  - **user_id**: Links to a user  
-  - **token**: Random string for authentication  
-  - **expires_at**: When the token stops working  
-  - **created_at**: When the session was created
-
-- **DashboardItems** *(optional for dynamic data)*
-  - **id**: Unique record  
-  - **title**: Item title  
-  - **content**: Item details  
-  - **created_at**: When the item was added
-
-### SQL Schema (PostgreSQL)
 ```sql
--- Users table
+-- Table for registered users
 CREATE TABLE users (
   id SERIAL PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+  hashed_password VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Sessions table
+-- Table for session tokens (Better Auth)
 CREATE TABLE sessions (
   id SERIAL PRIMARY KEY,
-  user_id INT REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   token VARCHAR(255) UNIQUE NOT NULL,
-  expires_at TIMESTAMPTZ NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+  expires_at TIMESTAMP NOT NULL
 );
 
--- Dashboard items table
-CREATE TABLE dashboard_items (
+-- Table for image processing records
+CREATE TABLE image_records (
   id SERIAL PRIMARY KEY,
-  title TEXT NOT NULL,
-  content TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  input_url TEXT NOT NULL,
+  output_url TEXT NOT NULL,
+  preset VARCHAR(100) NOT NULL,
+  status VARCHAR(50) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table for available presets
+CREATE TABLE presets (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) UNIQUE NOT NULL,
+  description TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```  
 
 ## 4. API Design and Endpoints
 
-- **Approach**: We follow a **RESTful** style, grouping related endpoints under `/api` directories.
+We follow a RESTful style, where each URL corresponds to a clear action or resource.
 
-- **Key Endpoints**
-  - `POST /api/auth/register`  
-    • Accepts `{ email, password }`  
-    • Creates a new user and issues a session token  
-  - `POST /api/auth/login`  
-    • Accepts `{ email, password }`  
-    • Verifies credentials and returns a session token  
-  - `POST /api/auth/logout`  
-    • Invalidates the session token on the server  
-  - `GET /api/dashboard/data`  
-    • Requires a valid session  
-    • Returns user-specific data or dashboard items  
+- **Authentication**
+  - `POST /api/auth/sign-up` → Create a new user account.
+  - `POST /api/auth/sign-in` → Log in and create a session token.
+  - `POST /api/auth/sign-out` → Invalidate the session token.
 
-- **Communication**
-  - Frontend sends JSON requests; backend replies with JSON and appropriate HTTP status codes.  
-  - Protected routes check for a valid session token (in cookies or Authorization header).
+- **Image Workflow**
+  - `POST /api/images/upload` → Accepts an image file, stores it temporarily, returns a URL.
+  - `POST /api/images/process` → Sends the image URL and preset choice to Chutes.ai, returns the processed image URL.
+  - `GET /api/images/history` → Returns a list of past image_records for the logged-in user.
+
+- **Presets Management**
+  - `GET /api/presets` → List all available presets.
+  - `POST /api/presets` → (Admin only) Add a new preset to the database.
+
+Each endpoint:
+- Expects JSON in request bodies.
+- Returns JSON with a clear `status` and `data` or `error` field.
 
 ## 5. Hosting Solutions
 
-- **Cloud Provider**:  
-  - **Vercel** (recommended) offers seamless Next.js deployments, auto-scaling, and built-in CDN.  
-  - Alternatively, **Netlify** or any Node.js-capable host will work.
+- **Frontend & API**
+  - Deployed on Vercel (or similar platforms like Netlify). Vercel automatically builds the Next.js project and serves both the frontend and API routes.
+  - Benefits: automatic SSL, global CDN, zero-config scaling.
 
-- **Benefits**
-  - **Reliability**: Global servers and failover across regions.  
-  - **Scalability**: Auto-scale serverless functions based on traffic.  
-  - **Cost-Effectiveness**: Pay-per-use model means low cost for small projects.
+- **Database**
+  - Hosted on a managed PostgreSQL service (AWS RDS, Neon, or Heroku Postgres).
+  - Benefits: automated backups, high availability, easy scaling of storage and compute.
+
+- **Docker (Local Development)**
+  - A Docker Compose setup runs:
+    - The Next.js app on one container.
+    - A local Postgres instance on another.
+  - This matches production as closely as possible for easier debugging.
 
 ## 6. Infrastructure Components
 
-- **Load Balancer**
-  - Provided by the hosting platform—distributes API requests across function instances.
-
-- **CDN (Content Delivery Network)**
-  - Vercel’s global edge network caches static assets (CSS, JS, images) for faster page loads.
+- **Load Balancing & CDN**
+  - Vercel’s edge network acts as a CDN and load balancer, routing traffic to the nearest serverless function.
 
 - **Caching**
-  - **Redis** (optional) for session storage or caching dashboard queries to reduce database load.
+  - Static assets (JavaScript, CSS, images) are cached at the CDN level.
+  - API responses can be cached using HTTP cache headers for endpoints that change infrequently (e.g., `/api/presets`).
 
-- **Object Storage**
-  - For file uploads or backups, integrate with AWS S3 or similar services.
-
-- **Message Queue**
-  - In future, use **RabbitMQ** or **Kafka** for background tasks (e.g., email notifications).
+- **Logging & Queues**
+  - Application logs are captured by Vercel or a logging service (e.g., Logflare).
+  - Long-running tasks (if needed) can be offloaded to a background queue (e.g., AWS SQS) and processed by serverless functions.
 
 ## 7. Security Measures
 
 - **Authentication & Authorization**
-  - Passwords hashed with **bcrypt** and salted.  
-  - Session tokens stored in secure, HttpOnly cookies or Authorization headers.  
-  - Protected endpoints verify tokens before proceeding.
+  - User sessions managed by Better Auth using secure, HTTP-only cookies.
+  - Protect all private endpoints by checking the session token on each request.
 
 - **Data Encryption**
-  - **HTTPS/TLS** encrypts data in transit.  
-  - Database connections use SSL to encrypt data between the app and the database.
+  - All traffic is served over HTTPS/TLS.
+  - Sensitive data at rest (e.g., user passwords, session tokens) is encrypted by the database service.
 
-- **Input Validation**
-  - Every incoming request is validated (e.g., valid email format, password length) to prevent SQL injection or other attacks.
+- **Environment Variables**
+  - API keys and database credentials live in Vercel’s environment settings or a `.env` file locally.
+  - Never commit secrets to version control.
 
-- **Web Security Best Practices**
-  - Enable **CORS** policies to limit allowed origins.  
-  - Use **CSRF tokens** or same-site cookies to prevent cross-site requests.  
-  - Set secure headers with **Helmet** or a similar middleware.
+- **Additional Protections**
+  - Input validation on all API routes (limit image sizes and types).
+  - Rate limiting to prevent abuse of image processing endpoints.
+  - Regular dependency updates to patch security vulnerabilities.
 
 ## 8. Monitoring and Maintenance
 
 - **Performance Monitoring**
-  - Integrate **Sentry** or **LogRocket** for real-time crash reporting and performance tracing.  
-  - Use Vercel’s built-in analytics to track request latencies and error rates.
+  - Use Vercel’s built-in analytics to track response times and error rates.
+  - Integrate Sentry (or a similar error-tracking tool) to capture exceptions and stack traces.
 
-- **Logging**
-  - Structured logs (JSON) for all API requests and errors, shipped to a log management service like **Datadog** or **Logflare**.
+- **Alerts & Dashboards**
+  - Set up alerts for high error rates or slow response times.
+  - Maintain a lightweight dashboard showing uptime, request volume, and average latency.
 
-- **Health Checks**
-  - Define a `/health` endpoint that returns a 200 status if the service is up and the database is reachable.
-
-- **Maintenance Strategies**
-  - Automated migrations run on deploy to keep the database schema up to date.  
-  - Scheduled dependency audits and security scans (e.g., `npm audit`).
-  - Regular backups of the database (daily or weekly depending on usage).
+- **Maintenance Routines**
+  - Weekly dependency checks and updates (via Dependabot or Renovate).
+  - Monthly database maintenance: vacuum, reindex, and review slow queries.
+  - Quarterly security reviews, including checking for outdated packages or misconfigurations.
 
 ## 9. Conclusion and Overall Backend Summary
 
-The backend for **codeguide-starter** is built on Next.js API Routes and Node.js, paired with PostgreSQL for data and optional Redis for caching. It follows a clear layered architecture that keeps code easy to maintain and extend. With RESTful endpoints for authentication and data, secure practices like password hashing and HTTPS, and hosting on Vercel for scalability and global performance, this setup meets the project’s goals for a fast, secure, and developer-friendly foundation. Future enhancements—such as background job queues, advanced monitoring, or richer data models—can be added without disrupting the core structure.
+The **shootmagic-image-workflow** backend is built on a modern, serverless-friendly stack: Next.js API Routes, TypeScript, Drizzle ORM with PostgreSQL, and Better Auth for secure sessions. It scales effortlessly on Vercel, leverages a managed database service for data reliability, and uses CDN caching for fast delivery worldwide. Clear separation of concerns—API routes, service layer, data layer—ensures the codebase is easy to maintain. Security, monitoring, and maintenance practices are in place to protect user data and keep the system healthy. This setup offers a reliable foundation for any future features, from advanced image processing pipelines to admin dashboards.

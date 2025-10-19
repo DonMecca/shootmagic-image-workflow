@@ -1,116 +1,80 @@
-# Security Guidelines for codeguide-starter
+# shootmagic-image-workflow: Security Guidelines
 
-This document defines mandatory security principles and implementation best practices tailored to the **codeguide-starter** repository. It aligns with Security-by-Design, Least Privilege, Defense-in-Depth, and other core security tenets. All sections reference specific areas of the codebase (e.g., `/app/api/auth/route.ts`, CSS files, environment configuration) to ensure practical guidance.
+## 1. Introduction
+This document outlines security best practices and requirements for the client-side image workflow application built with React (Vite) and the Chutes.ai API. Adhering to these guidelines will help ensure that the application remains robust, protects user data, and resists common web threats.
 
----
+## 2. Core Security Principles (Applied)
 
-## 1. Security by Design
+- Security by Design: Embed security into every feature—file uploads, API calls, and storage—rather than bolting it on later.
+- Least Privilege: Only request and store the minimum data you need. Limit localStorage usage strictly to processed image metadata.
+- Defense in Depth: Combine input validation, content security policies, and error handling to provide multiple protection layers.
+- Fail Securely: On errors (e.g., network failures, malformed inputs), show generic messages without revealing stack traces or sensitive details.
+- Secure Defaults: Ship with strict Content Security Policies (CSP) and CORS rules, and require HTTPS by default.
 
-• Embed security from day one: review threat models whenever adding new features (e.g., new API routes, data fetching).
-• Apply “secure defaults” in Next.js configuration (`next.config.js`), enabling strict mode and disabling debug flags in production builds.
-• Maintain a security checklist in your PR template to confirm that each change has been reviewed against this guideline.
+## 3. Threat Models & Mitigations
 
----
+### 3.1 File Upload & Input Validation
+- Validate file types and sizes client-side before sending to Chutes.ai: only allow JPEG, PNG, ≤ 10 MB.
+- Reject unexpected MIME types and scan Base64 payloads for malformed data.
+- Use HTML5 drag-and-drop APIs safely—sanitize filenames to prevent path traversal or script injection.
 
-## 2. Authentication & Access Control
+### 3.2 Local Storage Security
+- Store only non-sensitive data (image URLs, preset selections, timestamps). Avoid PII or raw image blobs.
+- Namespace keys (e.g., `shootmagic:results`) to avoid collisions.
+- Implement a size cap and eviction strategy: remove the oldest entries when exceeding storage quota.
+- On page load, validate stored entries against a schema to guard against corruption or tampering.
 
-### 2.1 Password Storage
-- Use **bcrypt** (or Argon2) with a per-user salt to hash passwords in `/app/api/auth/route.ts`.
-- Enforce a strong password policy on both client and server: minimum 12 characters, mixed case, numbers, and symbols.
+### 3.3 API Integration & Key Management
+- Keep the Chutes.ai key out of client code. Use a build-time environment variable (`import.meta.env.VITE_CHUTES_API_KEY`) injected by Vite.
+- Never commit `.env` or production keys to source control. Provide a `.env.example` without real secrets.
+- For increased security in production, consider a lightweight serverless proxy that stores the key server-side and forwards requests.
+- Enforce HTTPS on all API calls; reject insecure HTTP endpoints.
+- Implement exponential back-off and rate-limiting client-side to reduce risk of brute-forcing or flooding the Chutes.ai endpoint.
 
-### 2.2 Session Management
-- Issue sessions via Secure, HttpOnly, SameSite=strict cookies. Do **not** expose tokens to JavaScript.
-- Implement absolute and idle timeouts. For example, invalidate sessions after 30 minutes of inactivity.
-- Protect against session fixation by regenerating session IDs after authentication.
+### 3.4 Cross-Site Scripting (XSS) & Injection
+- Sanitize and encode all dynamic content (filenames, error messages, URLs) before rendering in React.
+- Use React’s built-in escaping by avoiding `dangerouslySetInnerHTML`.
+- Apply a strict CSP header via your static host (e.g., `Content-Security-Policy: default-src 'self'; img-src 'self' https://chutes.ai; script-src 'self'`).
 
-### 2.3 Brute-Force & Rate Limiting
-- Apply rate limiting at the API layer (e.g., using `express-rate-limit` or Next.js middleware) on `/api/auth` to throttle repeated login attempts.
-- Introduce exponential backoff or temporary lockout after N failed attempts.
+### 3.5 Cross-Site Request Forgery (CSRF)
+- As a purely client-side app, CSRF risk is minimal. If you implement a serverless proxy later, include anti-CSRF tokens in requests.
 
-### 2.4 Role-Based Access Control (Future)
-- Define user roles in your database model (e.g., `role = 'user' | 'admin'`).
-- Enforce server-side authorization checks in every protected route (e.g., in `dashboard/layout.tsx` loader functions).
+### 3.6 CORS Configuration
+- Configure your proxy or static host to allow only your application’s origin to fetch resources.
+- Avoid wildcard (`*`) in `Access-Control-Allow-Origin` for production.
 
----
+### 3.7 Error Handling & Information Leakage
+- Catch and handle network or API errors gracefully. Show user-friendly alerts like “Image processing failed. Please try again.”
+- Log detailed errors only in development. Strip stack traces or internal URLs in production builds.
 
-## 3. Input Handling & Processing
+### 3.8 Dependency Management
+- Vet all NPM packages before inclusion. Prefer libraries with active maintenance and no known high-severity CVEs.
+- Lock dependencies via `package-lock.json` and run automated SCA (Software Composition Analysis) in CI.
+- Regularly update Vite, React, and shadcn/ui to patch vulnerabilities.
 
-### 3.1 Validate & Sanitize All Inputs
-- On **client** (`sign-up/page.tsx`, `sign-in/page.tsx`): perform basic format checks (email regex, password length).
-- On **server** (`/app/api/auth/route.ts`): re-validate inputs with a schema validator (e.g., `zod`, `Joi`).
-- Reject or sanitize any unexpected fields to prevent injection attacks.
+## 4. Testing & CI/CD Security
+- Write unit tests with Vitest for the storage utility and API module. Mock fetch calls to simulate errors and success paths.
+- Include security linting (ESLint plugins like `eslint-plugin-security`) in the CI pipeline.
+- Run automated vulnerability scans on each pull request (e.g., `npm audit`, Snyk, or Dependabot alerts).
+- Ensure builds fail on high-severity vulnerabilities or linting errors.
 
-### 3.2 Prevent Injection
-- If you introduce a database later, always use parameterized queries or an ORM (e.g., Prisma) rather than string concatenation.
-- Avoid dynamic `eval()` or template rendering with unsanitized user input.
+## 5. Deployment Recommendations
+- Serve over HTTPS with HSTS (`Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`).
+- Use a minimal static file host (e.g., Netlify, Vercel) and enable secure headers (CSP, HSTS, X-Frame-Options).
+- Disable directory listings and any debug endpoints in production.
 
-### 3.3 Safe Redirects
-- When redirecting after login or logout, validate the target against an allow-list to prevent open redirects.
+## 6. Summary of Security Controls
 
----
-
-## 4. Data Protection & Privacy
-
-### 4.1 Encryption & Secrets
-- Enforce HTTPS/TLS 1.2+ for all front-end ↔ back-end communications.
-- Never commit secrets—use environment variables and a secrets manager (e.g., AWS Secrets Manager, Vault).
-
-### 4.2 Sensitive Data Handling
-- Do ​not​ log raw passwords, tokens, or PII in server logs. Mask or redact any user identifiers.
-- If storing PII in `data.json` or a future database, classify it and apply data retention policies.
-
----
-
-## 5. API & Service Security
-
-### 5.1 HTTPS Enforcement
-- In production, redirect all HTTP traffic to HTTPS (e.g., via Vercel’s redirect rules or custom middleware).
-
-### 5.2 CORS
-- Configure `next.config.js` or API middleware to allow **only** your front-end origin (e.g., `https://your-domain.com`).
-
-### 5.3 API Versioning & Minimal Exposure
-- Version your API routes (e.g., `/api/v1/auth`) to handle future changes without breaking clients.
-- Return only necessary fields in JSON responses; avoid leaking internal server paths or stack traces.
-
----
-
-## 6. Web Application Security Hygiene
-
-### 6.1 CSRF Protection
-- Use anti-CSRF tokens for any state-changing API calls. Integrate Next.js CSRF middleware or implement synchronizer tokens stored in cookies.
-
-### 6.2 Security Headers
-- In `next.config.js` (or a custom server), add these headers:
-  - `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`
-  - `X-Content-Type-Options: nosniff`
-  - `X-Frame-Options: DENY`
-  - `Referrer-Policy: no-referrer-when-downgrade`
-  - `Content-Security-Policy`: restrict script/style/src to self and trusted CDNs.
-
-### 6.3 Secure Cookies
-- Set `Secure`, `HttpOnly`, `SameSite=Strict` on all cookies. Avoid storing sensitive data in `localStorage`.
-
-### 6.4 Prevent XSS
-- Escape or encode all user-supplied data in React templates. Avoid `dangerouslySetInnerHTML` unless content is sanitized.
+| Area                               | Controls                                                                                 |
+|------------------------------------|------------------------------------------------------------------------------------------|
+| File Upload                        | Type/size validation, sanitized filenames, queued processing schema                      |
+| Local Storage                      | Namespaced, schema-validated entries, size cap & eviction                               |
+| API Key Management                 | Env variables, no commits, optional proxy, HTTPS-only                                   |
+| XSS & Injection                    | React escaping, no `innerHTML`, strict CSP                                              |
+| CORS & Headers                     | Restrictive origins, HSTS, X-Frame-Options, X-Content-Type-Options                       |
+| Error Handling                     | User-friendly messages, no stack traces in prod, dev-only logging                        |
+| Dependencies & CI/CD               | Lockfiles, SCA scans, security linting, fail on high-severity issues                      |
 
 ---
 
-## 7. Infrastructure & Configuration Management
-
-- Harden your hosting environment (e.g., Vercel/Netlify) by disabling unnecessary endpoints (GraphQL/GraphiQL playgrounds in production).
-- Rotate secrets and API keys regularly via your secrets manager.
-- Maintain minimal privileges: e.g., database accounts should only have read/write on required tables.
-- Keep Node.js, Next.js, and all system packages up to date.
-
----
-
-## 8. Dependency Management
-
-- Commit and maintain `package-lock.json` to guarantee reproducible builds.
-- Integrate a vulnerability scanner (e.g., GitHub Dependabot, Snyk) to monitor and alert on CVEs in dependencies.
-- Trim unused packages; each added library increases the attack surface.
-
----
-
-Adherence to these guidelines will ensure that **codeguide-starter** remains secure, maintainable, and resilient as it evolves. Regularly review and update this document to reflect new threats and best practices.
+By following these guidelines, the shootmagic-image-workflow application will maintain a strong security posture, protect user data, and minimize the risk of compromise throughout its development and deployment lifecycle.
